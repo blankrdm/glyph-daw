@@ -1,0 +1,27 @@
+# Dependencies and generated output
+node_modules/
+dist/
+coverage/
+.vite/
+*.tsbuildinfo
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# Local Glyph projects and audio files
+*.glyphdaw
+*.oga
+*.ogg
+*.mp3
+*.wav
+*.m4a
+*.flac
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+npm-debug.log*
