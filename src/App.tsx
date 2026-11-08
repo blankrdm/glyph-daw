@@ -8,16 +8,16 @@ import {
 } from 'lucide-react';
 import { useDaw, type Clip } from './store';
 import { exportGlyphOga } from './oga';
-import { DEVICE_NAMES, DEVICE_ZONES, GLYPH_STEP_MS, glyphGroupIds } from './devices';
+import { DEVICE_NAMES, DEVICE_ZONES, GLYPH_STEP_MS, glyphClipZoneWeights, glyphGroupForZone, glyphGroupIds, glyphStripForTrack, type GlyphLightDirection, type GlyphLightMode } from './devices';
 import { PhonePreview } from './PhonePreview';
 
 const COLORS = ['#f5f5f5', '#83e5d8', '#ff765f', '#c49bff', '#7bb8ff', '#f6c76c'];
 const EFFECTS = ['Steady', 'Fade in', 'Fade out', 'Pulse', 'Strobe'];
-const TRACK_LABELS = ['Main arc', 'Upper bar', 'Lower bar', 'Camera ring', 'Side strip', 'Dot matrix'];
+const TRACK_LABELS = ['Main arc', 'Upper bar', 'Lower bar', 'Camera ring', 'Side strip', 'Lower dot', 'Battery lower-left', 'Left vertical', 'Lower-right arc'];
 const MAX_TIMELINE_ZOOM = 10;
 const SNAP_OPTIONS = ['Off', '10 ms', '50 ms', '100 ms', '1/32', '1/16', '1/8', '1/4', '1/2'];
 type GlyphEffect = 'Steady' | 'Fade in' | 'Fade out' | 'Pulse' | 'Strobe';
-type ExtendedClip = Clip & { effect?: GlyphEffect; locked?: boolean };
+type ExtendedClip = Clip & { effect?: GlyphEffect; lightMode?: GlyphLightMode; direction?: GlyphLightDirection; tailLength?: number; locked?: boolean };
 type Project = { version: number; title: string; device: string; duration: number; clips: ExtendedClip[]; audioName?: string; audioData?: string; audioType?: string; brightness?: number; tempo?: number; snap?: string; deviceMode?: 'Grouped' | 'Individual'; author?: string };
 const LEGACY_LIME_CLIP_COLORS = new Set(['#d9ff5a', '#e5ff83', '#a7df70', '#a6c743', '#a8ce4a', '#a3c65b', '#9fbf67']);
 function normalizeClipColor(color: string): string {
@@ -513,7 +513,11 @@ function App() {
 
   useEffect(() => {
     if (!playing) return;
-    const timer = window.setInterval(() => {
+    let frame = 0;
+    let previousTime = performance.now();
+    const tick = (now: number) => {
+      const elapsed = Math.max(0, Math.min(.1, (now - previousTime) / 1000));
+      previousTime = now;
       const el = audioUrl ? audioEl.current : null;
       if (el) {
         const range = loopRangeRef.current;
@@ -522,12 +526,14 @@ function App() {
       } else {
         set(s => {
           const range = loopRangeRef.current;
-          const next = range.enabled && s.playhead + 1 / 30 >= range.end ? range.start : s.playhead + 1 / 30;
+          const next = range.enabled && s.playhead + elapsed >= range.end ? range.start : s.playhead + elapsed;
           return { playhead: next, playing: next >= duration && !range.enabled ? false : s.playing };
         });
       }
-    }, 33);
-    return () => window.clearInterval(timer);
+      if (useDaw.getState().playing) frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
   }, [playing, audioUrl, duration, set]);
 
   useEffect(() => {
@@ -881,6 +887,13 @@ function App() {
       return next;
     }) }));
   }
+  function setClipLightMode(clipId: string, mode: GlyphLightMode) {
+    set(s => ({ clips: s.clips.map(raw => {
+      if (raw.id !== clipId) return raw;
+      const c = raw as ExtendedClip;
+      return { ...c, lightMode: mode, direction: c.direction ?? 'forward', tailLength: c.tailLength ?? 3 };
+    }) }));
+  }
   function changeTrackFlag(kind: 'mute' | 'solo', track: number) {
     const state = kind === 'mute' ? muted : solo; const setter = kind === 'mute' ? setMuted : setSolo;
     setter(state.includes(track) ? state.filter(x => x !== track) : [...state, track]);
@@ -903,6 +916,14 @@ function App() {
     if (e.key === 'Escape' && showHelp) { setShowHelp(false); return; }
     const target = e.target as HTMLElement;
     if (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+      e.preventDefault();
+      const ids = clips.map(clip => clip.id);
+      selectionIdsRef.current = ids;
+      setSelectionIds(ids);
+      set(s => ({ selected: ids[ids.length - 1] ?? null }));
+      return;
+    }
     if (e.shiftKey && e.key === 'ArrowUp') { e.preventDefault(); nudgeSelectionTrack(-1); return; }
     if (e.shiftKey && e.key === 'ArrowDown') { e.preventDefault(); nudgeSelectionTrack(1); return; }
     if (e.code === 'Space') { e.preventDefault(); togglePlayback(); }
@@ -919,20 +940,33 @@ function App() {
   useEffect(() => { window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey); });
 
   const activeClip = clips.find(c => c.id === selected) as ExtendedClip | undefined;
+  const activeClipStrip = activeClip ? glyphStripForTrack(device, activeClip.track, deviceMode === 'Grouped') : [];
+  const contextClip = contextMenu ? clips.find(c => c.id === contextMenu.clipId) as ExtendedClip | undefined : undefined;
+  const contextClipStrip = contextClip ? glyphStripForTrack(device, contextClip.track, deviceMode === 'Grouped') : [];
   const activeLevels = useMemo(() => {
     const levels = new Float32Array(zoneCount);
+    const grouped = deviceMode === 'Grouped';
+    const validTracks = grouped ? new Set(groupedTracks.map(track => track.id)) : null;
     for (const raw of clips) {
       const clip = raw as ExtendedClip;
-      if (clip.track < 0 || clip.track >= zoneCount || muted.includes(clip.track) || (solo.length && !solo.includes(clip.track)) || playhead < clip.start || playhead >= clip.start + clip.duration) continue;
+      if (clip.track < 0 || (grouped ? !validTracks?.has(clip.track) : clip.track >= zoneCount) || muted.includes(clip.track) || (solo.length && !solo.includes(clip.track)) || playhead < clip.start || playhead >= clip.start + clip.duration) continue;
       const progress = (playhead - clip.start) / clip.duration;
       const pulse = clip.effect === 'Pulse' ? .35 + .65 * (.5 + .5 * Math.sin(progress * Math.PI * 4)) : 1;
       const fade = clip.effect === 'Fade in' ? progress : clip.effect === 'Fade out' ? 1 - progress : 1;
       const strobe = clip.effect === 'Strobe' && Math.floor((playhead - clip.start) * 60 / 12) % 2 ? 0 : 1;
-      levels[clip.track] = Math.max(levels[clip.track], clip.brightness * pulse * fade * strobe);
+      const intensity = clip.brightness * pulse * fade * strobe;
+      for (const [zone, weight] of glyphClipZoneWeights(device, clip.track, grouped, clip.lightMode, clip.direction, progress, clip.tailLength)) {
+        if (zone < levels.length) levels[zone] = Math.max(levels[zone], intensity * weight);
+      }
     }
     return levels;
-  }, [clips, masterBrightness, muted, playhead, solo, zoneCount]);
-  const zoneLevel = (track: number) => (activeLevels[track] ?? 0) * masterBrightness / 100;
+  }, [clips, device, deviceMode, groupedTracks, muted, playhead, solo, zoneCount]);
+  const zoneLevel = (track: number) => {
+    const level = deviceMode === 'Grouped'
+      ? (device === 'NP2' && track === 6 ? activeLevels[21] ?? 0 : activeLevels.reduce((max, value, zone) => glyphGroupForZone(device, zone) === track ? Math.max(max, value) : max, 0))
+      : activeLevels[track] ?? 0;
+    return level * masterBrightness / 100;
+  };
   const actualWaveform = audioFile && peaks.length ? peaks : [];
   const timeAt = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect(); return Math.max(0, (e.clientX - rect.left + e.currentTarget.scrollLeft) / pxPerSecond);
@@ -959,13 +993,13 @@ function App() {
         </div>
         <div className="bottom"><div className="mini"><span>OVERVIEW</span><div className="miniWave" onClick={e => { if (!actualWaveform.length) { fileInput.current?.click(); return; } const rect = e.currentTarget.getBoundingClientRect(); const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)); laneRef.current?.scrollTo({ left: Math.max(0, ratio * projectWidth - viewportWidth / 2), behavior: 'smooth' }); setPlayhead(ratio * duration); }}>{actualWaveform.length ? actualWaveform.filter((_, i) => i % Math.max(1, Math.ceil(actualWaveform.length / 320)) === 0).map((bin, i) => <i key={i} style={{ height: `${3 + Math.max(Math.abs(bin.min), Math.abs(bin.max)) * 18}px` }}/>) : <small>{waveformLoading ? 'Analyzing audio...' : waveformError ? 'Waveform unavailable' : 'Load audio to view waveform'}</small>}{audioFile && <div className="miniView" style={{ left: `${scrollX / projectWidth * 100}%`, width: `${Math.min(100, viewportWidth / projectWidth * 100)}%` }}/>}</div></div><div className="auto"><div><span className="autoDot"/> MASTER BRIGHTNESS </div><input className="brightnessRange" aria-label="Master brightness" type="range" min="0" max="100" value={masterBrightness} onChange={e => setMasterBrightness(Number(e.target.value))}/><b>{masterBrightness}%</b></div><div className="status"><span><span className="liveDot"/> {playing ? 'PLAYING' : 'READY'}</span><span>{duration.toFixed(1)}s</span><span>{GLYPH_STEP_MS} ms</span></div></div>
       </section>
-      <aside className="inspector"><div className="inspectHeader"><span>{activeClip && mobileTab !== 'monitor' ? 'CLIP INSPECTOR' : 'GLYPH MONITOR'}</span><button className="icon tiny" onClick={() => setShowHelp(true)}><MoreHorizontal/></button></div>{activeClip && mobileTab !== 'monitor' ? <div className="clipInspector"><label>NAME<input value={activeClip.name} onChange={e => setClip({ name: e.target.value })}/></label><label>BRIGHTNESS <b>{activeClip.brightness}%</b><input type="range" min="0" max="100" value={activeClip.brightness} onChange={e => setClip({ brightness: Number(e.target.value) })}/></label><label>EFFECT<select value={activeClip.effect || 'Steady'} onChange={e => setClip({ effect: e.target.value as GlyphEffect })}>{EFFECTS.map(x => <option key={x}>{x}</option>)}</select></label><div className="clipColorControl"><span>CLIP COLOR</span><div className="clipColorOptions">{COLORS.map(color => <button key={color} type="button" className={`clipColorSwatch ${normalizeClipColor(activeClip.color).toLowerCase() === color.toLowerCase() ? 'active' : ''}`} style={{ '--swatch': color } as React.CSSProperties} aria-label={`Set clip color ${color}`} title={color} onClick={() => setClip({ color })}/>)}<label className="customColor" title="Choose a custom color"><input type="color" aria-label="Choose custom clip color" value={normalizeClipColor(activeClip.color)} onChange={e => setClip({ color: e.target.value })}/><span>+</span></label></div></div><div className="clipFields"><label>START (s)<input type="number" step=".01" value={activeClip.start.toFixed(2)} onChange={e => setClip({ start: Number(e.target.value) })}/></label><label>LENGTH (s)<input type="number" min=".05" step=".05" value={activeClip.duration.toFixed(2)} onChange={e => setClip({ duration: Math.max(.05, Number(e.target.value)) })}/></label></div><button className="tool" onClick={() => setClip({ locked: !activeClip.locked })}>{activeClip.locked ? <Lock size={14}/> : <LockOpen size={14}/>} {activeClip.locked ? 'Unlock clip' : 'Lock clip'}</button><button className="tool danger" onClick={deleteSelected}><Trash2 size={14}/> Delete clip</button><button className="tool" onClick={duplicateSelected}><Copy size={14}/> Duplicate clip</button></div> : <><div className="deviceCard"><div className="deviceCaption"><span>PREVIEW</span><button className="mirror" onClick={() => setMirrored(v => !v)}>{mirrored ? 'NORMAL' : 'MIRROR'}</button></div>{(!isMobile || mobileTab === 'monitor') && <PhonePreview model={device} deviceMode={deviceMode} activeLevels={activeLevels} globalBrightness={masterBrightness / 100} mirrored={mirrored}/>}<div className="phoneInfo"><span>NOTHING <b>{DEVICE_NAMES[device as keyof typeof DEVICE_NAMES]}</b></span><span className="online">LIVE</span></div><a className="sourceCodeLink" href={`${import.meta.env.BASE_URL}glyph-daw-source.zip`} download>Source code · GPL-3.0</a></div><div className="sectionTitle">MASTER OUTPUT</div><div className="master"><div className="masterIcon"><Volume2 size={15}/></div><div className="masterText"><b>Glyph brightness</b><small>All zones scaled output</small></div><input type="range" min="0" max="100" value={masterBrightness} onChange={e => setMasterBrightness(Number(e.target.value))}/><b className="pct">{masterBrightness}%</b></div><div className="sectionTitle zoneTitle">ACTIVE ZONES <span>{tracks.filter(t => zoneLevel(t.id) > 0).length} / {zoneCount}</span></div>{tracks.slice(0, 6).map(t => <div className="zone" key={t.id}><span className="zoneLed" style={{ background: t.color, boxShadow: `0 0 8px ${t.color}77` }}/><span>{t.label}</span><div className="zoneMeter"><i style={{ width: `${Math.max(4, zoneLevel(t.id))}%`, background: t.color }}/></div></div>)}</>}
+      <aside className="inspector"><div className="inspectHeader"><span>{activeClip && mobileTab !== 'monitor' ? 'CLIP INSPECTOR' : 'GLYPH MONITOR'}</span><button className="icon tiny" onClick={() => setShowHelp(true)}><MoreHorizontal/></button></div>{activeClip && mobileTab !== 'monitor' ? <div className="clipInspector"><label>NAME<input value={activeClip.name} onChange={e => setClip({ name: e.target.value })}/></label><label>BRIGHTNESS <b>{activeClip.brightness}%</b><input type="range" min="0" max="100" value={activeClip.brightness} onChange={e => setClip({ brightness: Number(e.target.value) })}/></label><label>EFFECT<select value={activeClip.effect || 'Steady'} onChange={e => setClip({ effect: e.target.value as GlyphEffect })}>{EFFECTS.map(x => <option key={x}>{x}</option>)}</select></label>{activeClipStrip.length > 1 && <><label>LIGHT MODE<select value={activeClip.lightMode || 'Normal'} onChange={e => setClip({ lightMode: e.target.value as GlyphLightMode, direction: activeClip.direction || 'forward', tailLength: activeClip.tailLength || 3 })}><option>Normal</option><option>Fill</option><option>Sweep</option></select></label>{activeClip.lightMode && activeClip.lightMode !== 'Normal' && <label>DIRECTION<select value={activeClip.direction || 'forward'} onChange={e => setClip({ direction: e.target.value as GlyphLightDirection })}><option value="forward">Start → End</option><option value="reverse">End → Start</option></select></label>}{activeClip.lightMode === 'Sweep' && <label>SWEEP TAIL · {activeClip.tailLength || 3} ZONES<input type="range" min="1" max={activeClipStrip.length} value={Math.min(activeClipStrip.length, activeClip.tailLength || 3)} onChange={e => setClip({ tailLength: Number(e.target.value) })}/></label>}</>}<div className="clipColorControl"><span>CLIP COLOR</span><div className="clipColorOptions">{COLORS.map(color => <button key={color} type="button" className={`clipColorSwatch ${normalizeClipColor(activeClip.color).toLowerCase() === color.toLowerCase() ? 'active' : ''}`} style={{ '--swatch': color } as React.CSSProperties} aria-label={`Set clip color ${color}`} title={color} onClick={() => setClip({ color })}/>)}<label className="customColor" title="Choose a custom color"><input type="color" aria-label="Choose custom clip color" value={normalizeClipColor(activeClip.color)} onChange={e => setClip({ color: e.target.value })}/><span>+</span></label></div></div><div className="clipFields"><label>START (s)<input type="number" step=".01" value={activeClip.start.toFixed(2)} onChange={e => setClip({ start: Number(e.target.value) })}/></label><label>LENGTH (s)<input type="number" min=".05" step=".05" value={activeClip.duration.toFixed(2)} onChange={e => setClip({ duration: Math.max(.05, Number(e.target.value)) })}/></label></div><button className="tool" onClick={() => setClip({ locked: !activeClip.locked })}>{activeClip.locked ? <Lock size={14}/> : <LockOpen size={14}/>} {activeClip.locked ? 'Unlock clip' : 'Lock clip'}</button><button className="tool danger" onClick={deleteSelected}><Trash2 size={14}/> Delete clip</button><button className="tool" onClick={duplicateSelected}><Copy size={14}/> Duplicate clip</button></div> : <><div className="deviceCard"><div className="deviceCaption"><span>PREVIEW</span><button className="mirror" onClick={() => setMirrored(v => !v)}>{mirrored ? 'NORMAL' : 'MIRROR'}</button></div>{(!isMobile || mobileTab === 'monitor') && <PhonePreview model={device} deviceMode={deviceMode} activeLevels={activeLevels} globalBrightness={masterBrightness / 100} mirrored={mirrored}/>}<div className="phoneInfo"><span>NOTHING <b>{DEVICE_NAMES[device as keyof typeof DEVICE_NAMES]}</b></span><span className="online">LIVE</span></div><a className="sourceCodeLink" href={`${import.meta.env.BASE_URL}glyph-daw-source.zip`} download>Source code · GPL-3.0</a></div><div className="sectionTitle">MASTER OUTPUT</div><div className="master"><div className="masterIcon"><Volume2 size={15}/></div><div className="masterText"><b>Glyph brightness</b><small>All zones scaled output</small></div><input type="range" min="0" max="100" value={masterBrightness} onChange={e => setMasterBrightness(Number(e.target.value))}/><b className="pct">{masterBrightness}%</b></div><div className="sectionTitle zoneTitle">ACTIVE ZONES <span>{tracks.filter(t => zoneLevel(t.id) > 0).length} / {zoneCount}</span></div>{tracks.slice(0, 6).map(t => <div className="zone" key={t.id}><span className="zoneLed" style={{ background: t.color, boxShadow: `0 0 8px ${t.color}77` }}/><span>{t.label}</span><div className="zoneMeter"><i style={{ width: `${Math.max(4, zoneLevel(t.id))}%`, background: t.color }}/></div></div>)}</>}
         <div className="inspectorFooter"><button className="icon tiny inspectorOgaExport" aria-label="Download OGG" title={exporting ? 'Encoding OGG…' : 'Download OGG'} disabled={exporting} onClick={() => void exportOga()}><ArrowDownToLine/></button></div>
       </aside>
     </main>
     <nav className="mobileNav" role="tablist" aria-label="Main views"><button role="tab" aria-selected={mobileTab === 'arrangement'} className={mobileTab === 'arrangement' ? 'active' : ''} onClick={() => setMobileTab('arrangement')}>Arrangement</button><button role="tab" aria-selected={mobileTab === 'monitor'} className={mobileTab === 'monitor' ? 'active' : ''} onClick={() => setMobileTab('monitor')}>Monitor</button><button role="tab" aria-selected={mobileTab === 'tools'} className={mobileTab === 'tools' ? 'active' : ''} onClick={() => setMobileTab('tools')}>Tools</button></nav>
-    {contextMenu && <><div className="contextDismiss" onPointerDown={() => setContextMenu(null)}/><div className="clipContextMenu" style={{ left: Math.min(contextMenu.x, window.innerWidth - 180), top: Math.min(contextMenu.y, window.innerHeight - 160) }} onPointerDown={e => e.stopPropagation()}><button onClick={() => { duplicateClipById(contextMenu.clipId); setContextMenu(null); }}>Duplicate</button><button onClick={() => { set(s => ({ clips: s.clips.filter(c => c.id !== contextMenu.clipId), selected: null })); selectionIdsRef.current = []; setSelectionIds([]); setContextMenu(null); }}>Delete</button><button onClick={() => { set(s => ({ clips: s.clips.map(c => c.id === contextMenu.clipId ? { ...c, locked: !(c as ExtendedClip).locked } : c), selected: contextMenu.clipId })); selectionIdsRef.current = [contextMenu.clipId]; setSelectionIds([contextMenu.clipId]); setContextMenu(null); }}>Toggle lock</button></div></>}
-    {showHelp && <div className="modalBg" onClick={() => setShowHelp(false)}><div className="help" onClick={e => e.stopPropagation()}><div><b>Keyboard shortcuts</b><button onClick={() => setShowHelp(false)}>Close</button></div><p><kbd>Space</kbd><span>Play / pause</span></p><p><kbd>Ctrl/Cmd Z</kbd><span>Undo</span></p><p><kbd>Ctrl/Cmd D</kbd><span>Duplicate clip</span></p><p><kbd>Shift ↑ / ↓</kbd><span>Move selected clips between tracks</span></p><p><kbd>S</kbd><span>Split selected clip at playhead</span></p><p><kbd>Ctrl/Cmd C / V</kbd><span>Copy / paste clip</span></p><p><kbd>Ctrl/Cmd S / O</kbd><span>Save / open project</span></p><p><kbd>Delete</kbd><span>Delete selected clip</span></p><p><kbd>Esc</kbd><span>Close this panel</span></p><button className="export" onClick={exportJson}><ArrowDownToLine size={14}/> Export NGlyph JSON</button></div></div>}
+    {contextMenu && <><div className="contextDismiss" onPointerDown={() => setContextMenu(null)}/><div className="clipContextMenu" style={{ left: Math.min(contextMenu.x, window.innerWidth - 180), top: Math.min(contextMenu.y, window.innerHeight - 250) }} onPointerDown={e => e.stopPropagation()}>{contextClipStrip.length > 1 && <><span className="clipContextHeading">Effect</span><button onClick={() => { setClipLightMode(contextMenu.clipId, 'Normal'); setContextMenu(null); }}>Normal</button><button onClick={() => { setClipLightMode(contextMenu.clipId, 'Fill'); setContextMenu(null); }}>Fill</button><button onClick={() => { setClipLightMode(contextMenu.clipId, 'Sweep'); setContextMenu(null); }}>Sweep</button></>}<button onClick={() => { duplicateClipById(contextMenu.clipId); setContextMenu(null); }}>Duplicate</button><button onClick={() => { set(s => ({ clips: s.clips.filter(c => c.id !== contextMenu.clipId), selected: null })); selectionIdsRef.current = []; setSelectionIds([]); setContextMenu(null); }}>Delete</button><button onClick={() => { set(s => ({ clips: s.clips.map(c => c.id === contextMenu.clipId ? { ...c, locked: !(c as ExtendedClip).locked } : c), selected: contextMenu.clipId })); selectionIdsRef.current = [contextMenu.clipId]; setSelectionIds([contextMenu.clipId]); setContextMenu(null); }}>Toggle lock</button></div></>}
+    {showHelp && <div className="modalBg" onClick={() => setShowHelp(false)}><div className="help" onClick={e => e.stopPropagation()}><div><b>Keyboard shortcuts</b><button onClick={() => setShowHelp(false)}>Close</button></div><p><kbd>Space</kbd><span>Play / pause</span></p><p><kbd>Ctrl/Cmd A</kbd><span>Select all clips</span></p><p><kbd>Ctrl/Cmd Z</kbd><span>Undo</span></p><p><kbd>Ctrl/Cmd D</kbd><span>Duplicate clip</span></p><p><kbd>Shift ↑ / ↓</kbd><span>Move selected clips between tracks</span></p><p><kbd>S</kbd><span>Split selected clip at playhead</span></p><p><kbd>Ctrl/Cmd C / V</kbd><span>Copy / paste clip</span></p><p><kbd>Ctrl/Cmd S / O</kbd><span>Save / open project</span></p><p><kbd>Delete</kbd><span>Delete selected clip</span></p><p><kbd>Esc</kbd><span>Close this panel</span></p><button className="export" onClick={exportJson}><ArrowDownToLine size={14}/> Export NGlyph JSON</button></div></div>}
   </div>;
 }
 
@@ -1041,7 +1075,7 @@ function ClipView({ clip, allClips, selected, selectedIds, trackOrder, trackHeig
     el.addEventListener('pointerup', finish);
     el.addEventListener('pointercancel', finish);
   }
-  return <div data-clip-id={clip.id} className={`clip ${selected ? 'selected' : ''} ${clip.locked ? 'locked' : ''}`} onClick={e => e.stopPropagation()} onDoubleClick={e => { e.stopPropagation(); onSelect(e.shiftKey || e.ctrlKey || e.metaKey); }} onContextMenu={e => { e.preventDefault(); e.stopPropagation(); onContextMenu(e.clientX, e.clientY); }} onPointerDown={e => { if (e.button !== 0) return; const modifier = e.shiftKey || e.ctrlKey || e.metaKey; if (modifier || !selected) onSelect(modifier); drag(e, 'move'); }} style={{ left: `${clip.start * 44 * zoom}px`, width: `${clip.duration * 44 * zoom}px`, background: `linear-gradient(100deg,${clipColor}22,${clipColor}0d)`, borderColor: `${clipColor}88`, '--clip': clipColor } as React.CSSProperties}><span className="clipStripe"/><span className="clipName">{clip.name}</span><span className="clipBrightness">{clip.effect || 'Steady'} / {clip.brightness}%</span><span className="handle left" onPointerDown={e => drag(e, 'left')}/><span className="handle right" onPointerDown={e => drag(e, 'right')}/></div>;
+  return <div data-clip-id={clip.id} className={`clip ${selected ? 'selected' : ''} ${clip.locked ? 'locked' : ''}`} onClick={e => e.stopPropagation()} onDoubleClick={e => { e.stopPropagation(); onSelect(e.shiftKey || e.ctrlKey || e.metaKey); }} onContextMenu={e => { e.preventDefault(); e.stopPropagation(); onContextMenu(e.clientX, e.clientY); }} onPointerDown={e => { if (e.button !== 0) return; const modifier = e.shiftKey || e.ctrlKey || e.metaKey; if (modifier || !selected) onSelect(modifier); drag(e, 'move'); }} style={{ left: `${clip.start * 44 * zoom}px`, width: `${clip.duration * 44 * zoom}px`, background: `linear-gradient(100deg,${clipColor}22,${clipColor}0d)`, borderColor: `${clipColor}88`, '--clip': clipColor } as React.CSSProperties}><span className="clipStripe"/><span className="clipName">{clip.name}</span><span className="clipBrightness">{clip.lightMode && clip.lightMode !== 'Normal' ? `${clip.lightMode} · ` : ''}{clip.effect || 'Steady'} / {clip.brightness}%</span><span className="handle left" onPointerDown={e => drag(e, 'left')}/><span className="handle right" onPointerDown={e => drag(e, 'right')}/></div>;
 }
 export default App;
 
