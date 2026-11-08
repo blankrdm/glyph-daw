@@ -187,7 +187,6 @@ function App() {
   const [trackScroll, setTrackScroll] = useState(0);
   const [mirrored, setMirrored] = useState(false);
   useEffect(() => setTempoInput(String(tempo)), [tempo]);
-  useEffect(() => { if (selected) setDesktopAsideView('inspector'); }, [selected]);
   useEffect(() => { if (audioEl.current) audioEl.current.volume = siteVolume / 100; }, [siteVolume, audioUrl]);
   const commitTempoInput = () => {
     const parsed = Number(tempoInput);
