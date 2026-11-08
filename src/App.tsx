@@ -761,28 +761,109 @@ function App() {
     if (!audioFile) { setMessage('Import audio before generating a pattern'); fileInput.current?.click(); return; }
     if (waveformLoading) { setMessage('Analyzing waveform...'); return; }
     if (waveformError || !analysis.length) { setMessage('Audio analysis failed'); return; }
-    const maxLevel = Math.max(...analysis);
+    if (!tracks.length) { setMessage('No Glyph tracks are available'); return; }
+    const maxLevel = analysis.reduce((max, value) => Math.max(max, value), 0);
     if (!maxLevel) { setMessage('No audio energy detected'); return; }
     const normalized = analysis.map(v => v / maxLevel);
     const threshold = generationPreset === 'Subtle' ? .38 : generationPreset === 'Aggressive' ? .18 : .27;
-    const gap = generationPreset === 'Subtle' ? 45 : generationPreset === 'Aggressive' ? 12 : 25;
-    const generated: ExtendedClip[] = []; const occupied = [...clips] as ExtendedClip[]; let last = -gap;
+    const flux = analysis.map((value, index) => Math.max(0, value - (analysis[index - 1] ?? 0)));
+    const maxFlux = flux.reduce((max, value) => Math.max(max, value), 0);
+    if (!maxFlux) { setMessage('No clear audio attacks found'); return; }
+    const normalizedFlux = flux.map(value => value / maxFlux);
+    const fluxFloor = generationPreset === 'Subtle' ? .2 : generationPreset === 'Aggressive' ? .07 : .12;
+    const onsets: Array<{ time: number; strength: number }> = [];
     for (let i = 2; i < normalized.length - 2; i += 1) {
-      const rise = normalized[i] - normalized[i - 2];
-      if (normalized[i] < threshold || rise < .08 || normalized[i] < normalized[i - 1] || normalized[i] < normalized[i + 1] || i - last < gap) continue;
-      const time = i / 100;
-      const lane = Math.min(tracks.length - 1, Math.floor((1 - normalized[i]) * tracks.length));
-      const track = tracks[lane]?.id ?? 0;
-      const clipDuration = generationPreset === 'Aggressive' ? .18 : .3;
-      const start = nearestFreeStart(occupied, track, align(time), clipDuration);
-      if (start > duration) continue;
-      const clip: ExtendedClip = { id: crypto.randomUUID(), track, start, duration: clipDuration, name: 'Audio accent', color: COLORS[lane % COLORS.length], brightness: Math.round(42 + normalized[i] * 58), effect: generationPreset === 'Subtle' ? 'Fade in' : 'Pulse' };
-      generated.push(clip); occupied.push(clip);
-      last = i;
+      if (normalized[i] < Math.max(.08, threshold * .35) || normalizedFlux[i] < fluxFloor) continue;
+      if (flux[i] < flux[i - 1] || flux[i] < flux[i + 1]) continue;
+      onsets.push({ time: i / 100, strength: normalized[i] * .35 + normalizedFlux[i] * .65 });
+    }
+    if (!onsets.length) { setMessage('No clear audio attacks found. Try Aggressive.'); return; }
+    const beatDuration = 60 / Math.max(10, Math.min(300, tempo));
+    const subdivisions = generationPreset === 'Subtle' ? 1 : generationPreset === 'Aggressive' ? 4 : 2;
+    const gridStep = beatDuration / subdivisions;
+    const phase = onsets[0].time;
+    const tolerance = Math.max(.035, Math.min(.09, gridStep * .3));
+    const gridEvents = new Map<number, { time: number; strength: number }>();
+    for (const onset of onsets) {
+      const gridIndex = Math.round((onset.time - phase) / gridStep);
+      const time = phase + gridIndex * gridStep;
+      if (gridIndex < 0 || time > duration || Math.abs(onset.time - time) > tolerance) continue;
+      const current = gridEvents.get(gridIndex);
+      if (!current || onset.strength > current.strength) gridEvents.set(gridIndex, { time, strength: onset.strength });
+    }
+    const beatEvents = [...gridEvents.values()].sort((a, b) => a.time - b.time);
+    if (!beatEvents.length) { setMessage(`No transients matched the ${tempo} BPM grid. Try Detect BPM or Aggressive.`); return; }
+    const eventsPerSecond = generationPreset === 'Subtle' ? 1.5 : generationPreset === 'Aggressive' ? 4 : 2.6;
+    const eventLimit = Math.min(360, Math.max(24, Math.ceil(duration * eventsPerSecond)));
+    const trackPool = tracks.length > 24
+      ? Array.from({ length: 24 }, (_, index) => tracks[Math.floor(index * tracks.length / 24)])
+      : tracks;
+    const grouped = deviceMode === 'Grouped';
+    const generated: ExtendedClip[] = [];
+    const occupied = [...clips] as ExtendedClip[];
+    let eventIndex = 0;
+    for (const event of beatEvents.slice(0, eventLimit)) {
+      const { time, strength } = event;
+      const layerCount = Math.min(trackPool.length, generationPreset === 'Aggressive'
+        ? strength > .68 ? 3 : 2
+        : generationPreset === 'Rhythmic' ? strength > .72 && eventIndex % 3 !== 1 ? 2 : 1
+        : strength > .82 && eventIndex % 4 === 0 ? 2 : 1);
+      const usedTracks = new Set<number>();
+      for (let layer = 0; layer < layerCount; layer += 1) {
+        const poolIndex = (eventIndex + layer * Math.max(1, Math.ceil(trackPool.length / 3))) % trackPool.length;
+        let track = trackPool[poolIndex];
+        if (usedTracks.has(track.id)) track = trackPool.find(candidate => !usedTracks.has(candidate.id)) ?? track;
+        usedTracks.add(track.id);
+        const strip = glyphStripForTrack(device, track.id, grouped);
+        const zones = glyphZonesForTrack(device, track.id, grouped);
+        const modeRoll = (eventIndex * 7 + layer * 5) % 10;
+        let lightMode: GlyphLightMode | undefined;
+        if (strip.length > 1 && modeRoll < (generationPreset === 'Aggressive' ? 4 : generationPreset === 'Rhythmic' ? 2 : 1)) {
+          lightMode = 'Sweep';
+        } else if (strip.length > 1 && modeRoll < (generationPreset === 'Aggressive' ? 7 : generationPreset === 'Rhythmic' ? 5 : 4)) {
+          lightMode = 'Fill';
+        } else if (zones.length > 1 && modeRoll < (generationPreset === 'Aggressive' ? 9 : generationPreset === 'Rhythmic' ? 8 : 6)) {
+          lightMode = 'Zones';
+        }
+        const directionRoll = (eventIndex * 11 + layer * 7) % 8;
+        const direction: GlyphLightDirection = directionRoll === 0 ? 'reverse'
+          : directionRoll === 1 ? 'forward-instant'
+          : directionRoll === 2 ? 'reverse-instant' : 'forward';
+        const selectedZones = lightMode === 'Zones' ? (() => {
+          const count = Math.min(zones.length, Math.max(1, Math.round(Math.sqrt(zones.length))));
+          const offset = (eventIndex * 3 + layer * 5) % zones.length;
+          return Array.from({ length: count }, (_, index) => zones[(offset + index) % zones.length]);
+        })() : undefined;
+        const beatRatio = generationPreset === 'Subtle' ? .8 : generationPreset === 'Aggressive' ? .28 : .5;
+        const clipDuration = beatDuration * beatRatio * (layer ? .9 : 1);
+        const layerDelay = layer * gridStep;
+        const start = nearestFreeStart(occupied, track.id, time + layerDelay, clipDuration);
+        if (start > duration) continue;
+        const effectRoll = (eventIndex * 3 + layer * 2) % 8;
+        const effect: GlyphEffect = generationPreset === 'Subtle'
+          ? effectRoll < 4 ? 'Fade in' : 'Steady'
+          : generationPreset === 'Aggressive'
+            ? effectRoll < 3 ? 'Strobe' : effectRoll < 6 ? 'Pulse' : 'Fade out'
+            : effectRoll < 4 ? 'Pulse' : effectRoll === 4 ? 'Fade out' : 'Steady';
+        const clip: ExtendedClip = {
+          id: crypto.randomUUID(), track: track.id, start, duration: clipDuration,
+          name: 'Audio accent', color: track.color,
+          brightness: Math.round(38 + strength * 62), effect, lightMode,
+          ...(lightMode === 'Fill' ? { fillAmount: Math.max(1, Math.ceil(strip.length * (.4 + strength * .6))) } : {}),
+          ...(lightMode === 'Sweep' ? { tailLength: Math.max(1, Math.min(strip.length, 1 + Math.round(strength * 4))) } : {}),
+          ...(lightMode === 'Zones' ? { selectedZones } : {}),
+          ...(lightMode === 'Fill' || lightMode === 'Sweep' ? { direction } : {}),
+        };
+        generated.push(clip);
+        occupied.push(clip);
+      }
+      eventIndex += 1;
     }
     if (!generated.length) { setMessage('No strong accents found. Try Aggressive or another section.'); return; }
     set(s => ({ clips: [...s.clips, ...generated], selected: generated[0].id }));
-    setMessage(`Generated ${generated.length} clips from audio`);
+    const usedTrackCount = new Set(generated.map(clip => clip.track)).size;
+    const usedModes = new Set(generated.map(clip => clip.lightMode).filter((mode): mode is GlyphLightMode => Boolean(mode)));
+    setMessage(`Generated ${generated.length} clips across ${usedTrackCount} tracks at ${tempo} BPM${usedModes.size ? ` with ${[...usedModes].join(', ')}` : ''}`);
   }
   function detectTempo() {
     if (!audioFile) { fileInput.current?.click(); return; }
