@@ -14,7 +14,7 @@ const devices: Record<string, { composer: string; zones: number; custom2: string
   NP3: { composer: 'v1-Metroid Glyph Composer', zones: 625, custom2: '625cols' },
 };
 
-type ExportClip = Clip & { effect?: string; lightMode?: GlyphLightMode; direction?: GlyphLightDirection; tailLength?: number };
+type ExportClip = Clip & { effect?: string; lightMode?: GlyphLightMode; direction?: GlyphLightDirection; tailLength?: number; fillAmount?: number; selectedZones?: number[] };
 
 const FRAME_RATE = 60;
 const EMPTY_CUSTOM1 = 'eNoDAAAAAAE=';
@@ -76,7 +76,7 @@ function encodeGlyphCsv(clips: ExportClip[], model: string, grouped: boolean, du
       else if (clip.effect === 'Pulse') brightness *= .35 + .65 * (.5 + .5 * Math.sin(progress * Math.PI * 4));
       else if (clip.effect === 'Strobe') brightness = Math.floor(elapsed / 12) % 2 === 0 ? base : 0;
       const encoded = Math.max(0, Math.min(4095, Math.round(brightness)));
-      for (const [zone, weight] of glyphClipZoneWeights(model, clip.track, grouped, clip.lightMode, clip.direction, progress, clip.tailLength)) {
+      for (const [zone, weight] of glyphClipZoneWeights(model, clip.track, grouped, clip.lightMode, clip.direction, progress, clip.tailLength, clip.fillAmount, clip.selectedZones)) {
         if (zone >= 0 && zone < zoneCount && isVisibleGlyphZone(model, zone)) row[zone] = Math.max(row[zone], Math.round(encoded * weight));
       }
     }

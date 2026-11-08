@@ -3,8 +3,17 @@ export const DEVICE_NAMES={NP1:'Phone (1)',NP1_15:'Phone (1) · Experimental 15 
 export const GLYPH_STEP_MS=16.666;
 export const MAX_BRIGHTNESS=4095;
 
-export type GlyphLightMode = 'Normal' | 'Fill' | 'Sweep';
-export type GlyphLightDirection = 'forward' | 'reverse';
+export type GlyphLightMode = 'Normal' | 'Fill' | 'Sweep' | 'Zones';
+export type GlyphLightDirection = 'forward' | 'reverse' | 'forward-instant' | 'reverse-instant';
+
+/** Physical LED zones controlled by a grouped or individual track. */
+export function glyphZonesForTrack(model: string, track: number, grouped: boolean): number[] {
+  const zoneCount = DEVICE_ZONES[model as keyof typeof DEVICE_ZONES] ?? 0;
+  if (!grouped) return track >= 0 && track < zoneCount && isVisibleGlyphZone(model, track) ? [track] : [];
+  if (model === 'NP2' && track === 6) return [21];
+  return Array.from({ length: zoneCount }, (_, zone) => zone)
+    .filter(zone => glyphGroupForZone(model, zone) === track && isVisibleGlyphZone(model, zone));
+}
 
 /** Hardware-zone order for Glyph paths that can be animated as a strip. */
 export function glyphStripZoneOrder(model: string, group: number): number[] {
@@ -33,22 +42,32 @@ export function glyphClipZoneWeights(
   direction: GlyphLightDirection | undefined,
   progress: number,
   sweepWidth = 3,
+  fillAmount?: number,
+  selectedZones?: number[],
 ): Array<[zone: number, weight: number]> {
-  const zoneCount = DEVICE_ZONES[model as keyof typeof DEVICE_ZONES] ?? 0;
-  const normalZones = grouped
-    ? (model === 'NP2' && track === 6 ? [21] : Array.from({ length: zoneCount }, (_, zone) => zone).filter(zone => glyphGroupForZone(model, zone) === track))
-    : [track];
+  const normalZones = glyphZonesForTrack(model, track, grouped);
+  if (mode === 'Zones') {
+    const selected = selectedZones ? new Set(selectedZones) : null;
+    return normalZones.filter(zone => !selected || selected.has(zone)).map(zone => [zone, 1] as [number, number]);
+  }
   if (mode !== 'Fill' && mode !== 'Sweep') return normalZones.filter(zone => isVisibleGlyphZone(model, zone)).map(zone => [zone, 1]);
 
   let strip = glyphStripForTrack(model, track, grouped);
   if (strip.length < 2) return normalZones.filter(zone => isVisibleGlyphZone(model, zone)).map(zone => [zone, 1]);
-  if (direction === 'reverse') strip = strip.reverse();
+  const reverse = direction === 'reverse' || direction === 'reverse-instant';
+  const instant = direction === 'forward-instant' || direction === 'reverse-instant';
+  if (reverse) strip = strip.reverse();
   const position = Math.max(0, Math.min(1, progress));
   if (mode === 'Fill') {
-    const filledPosition = position * (strip.length - 1) + 1;
+    const fillLength = Math.max(1, Math.min(strip.length, Math.round(fillAmount ?? strip.length) || strip.length));
+    if (instant) {
+      return strip.slice(0, fillLength).filter(zone => isVisibleGlyphZone(model, zone)).map(zone => [zone, 1]);
+    }
+    const filledPosition = position * (fillLength - 1) + 1;
     return strip.map((zone, index) => [zone, Math.max(0, Math.min(1, filledPosition - index))] as [number, number])
       .filter(([zone, weight]) => weight > 0 && isVisibleGlyphZone(model, zone));
   }
+  if (instant) return strip.filter(zone => isVisibleGlyphZone(model, zone)).map(zone => [zone, 1]);
   const width = Math.max(1, Math.min(strip.length, Math.round(sweepWidth) || 1));
   const headPosition = position * (strip.length - 1);
   const head = Math.floor(headPosition);

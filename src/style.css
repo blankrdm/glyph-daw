@@ -46,9 +46,10 @@ body,.app{background:#090a0c}.top,.rail,.inspector{background:#101215}.workspace
   .main{display:block;position:relative;flex:1;min-height:0;overflow:hidden;padding:0}
   .rail{display:none}
   .workspace{position:absolute;inset:0;min-width:0;min-height:0}
-  .main.mobile-monitor .workspace,.main.mobile-tools .inspector,.main.mobile-arrangement .inspector{display:none}
+  .main.mobile-monitor .workspace,.main.mobile-inspector .workspace,.main.mobile-arrangement .inspector{display:none}
   .inspector{display:none;position:absolute;inset:0;min-width:0;overflow-x:hidden;overflow-y:auto;padding-bottom:env(safe-area-inset-bottom);border-left:0}
-  .main.mobile-monitor .inspector{display:flex}
+  .main.mobile-monitor .inspector,.main.mobile-inspector .inspector{display:flex}
+  .emptyInspector{flex:1;display:grid;place-items:center;color:#858c91;font-size:12px}
   .inspectHeader{position:sticky;top:0;z-index:3;flex:none;background:#101215;min-height:48px}
   .deviceCard{width:calc(100% - 24px);max-width:460px;margin:10px auto 8px;padding:9px 12px}
   .phonePreview{width:min(38vw,170px);height:min(76vw,340px);margin:4px auto 6px}
@@ -72,12 +73,6 @@ body,.app{background:#090a0c}.top,.rail,.inspector{background:#101215}.workspace
   .clip{height:48px;top:8px;padding:7px 9px;touch-action:none}.handle{width:12px}.handle.left{left:0}.handle.right{right:0}
   .quickTutorial{top:32px;left:8px;transform:none;width:calc(100% - 16px);display:grid;grid-template-columns:1fr 1fr;gap:3px 7px;padding:4px 7px;white-space:normal;font-size:8px;line-height:1.15;pointer-events:none}.quickTutorial>b{grid-column:1/-1}.quickTutorial span,.quickTutorial button{font-size:8px;gap:3px;justify-content:flex-start}.quickTutorial button{pointer-events:auto}.quickTutorial kbd{font-size:7px;padding:2px 3px}
   .bottom{display:none}
-  .main.mobile-tools .workspace .toolbar{height:100%;min-height:0;align-items:stretch;justify-content:flex-start;flex-direction:column;overflow-y:auto;overflow-x:hidden;padding:12px}
-  .main.mobile-tools .workspace .tabs{display:none}
-  .main.mobile-tools .workspace .toolbuttons{display:flex;flex:0 0 auto;width:100%;overflow:visible;flex-wrap:wrap;align-content:flex-start;gap:7px}
-  .main.mobile-tools .workspace .toolbuttons .vline{display:none}
-  .main.mobile-tools .workspace .toolbuttons .tool,.main.mobile-tools .workspace .toolbuttons .icon,.main.mobile-tools .workspace .toolbuttons select{min-height:46px}
-  .main.mobile-tools .workspace .trackhead,.main.mobile-tools .workspace .timelineArea,.main.mobile-tools .workspace .bottom{display:none}
   .mobileNav{display:grid;position:relative;z-index:6;flex:none;grid-template-columns:repeat(3,minmax(0,1fr));height:calc(58px + env(safe-area-inset-bottom));padding:4px max(8px,env(safe-area-inset-right)) env(safe-area-inset-bottom) max(8px,env(safe-area-inset-left));background:#101215;border-top:1px solid #292d32}
   .mobileNav button{min-width:0;min-height:46px;border-radius:6px;color:#858c91;font-size:10px;letter-spacing:.3px;touch-action:manipulation}
   .mobileNav button.active{background:#22262a;color:#f5f5f5}
@@ -104,8 +99,19 @@ body,.app{background:#090a0c}.top,.rail,.inspector{background:#101215}.workspace
 .inspectorFooter{justify-content:flex-start}.inspectorFooter .inspectorOgaExport{margin:0;min-height:38px}
 .inspectorFooter .inspectorOgaExport{margin:0;min-height:0}
 @media (max-width:1023px){.inspectorFooter .inspectorOgaExport{width:44px;min-width:44px;height:44px}}
+@media (max-width:1023px){.clipInspector .zonePicker{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;max-height:35vh;padding:2px}.clipInspector .zonePicker label{min-height:44px;padding:8px;border:1px solid #393d3b;border-radius:6px;background:#1b1e21;font-size:12px;letter-spacing:.2px;touch-action:manipulation}.clipInspector .zonePicker input[type=checkbox]{width:22px;height:22px;flex:none}.clipInspector .zonePickerTools .tool{min-height:40px;padding:8px 14px}}
 @media (min-width:1024px) and (max-width:1600px){.quickTutorial{left:calc(var(--timeline-scroll-x,0px) + 8px);transform:none;width:calc(var(--timeline-viewport-width,100%) - 16px);max-width:calc(var(--timeline-viewport-width,100%) - 16px);display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:center;gap:6px 12px;padding:8px 10px;white-space:normal;box-sizing:border-box}.quickTutorial>b{grid-column:1/-1}.quickTutorial span,.quickTutorial button{min-width:0;flex-wrap:wrap;line-height:1.2}}
 
 .lane.dragging-lane{z-index:5}.clip.dragging-preview{z-index:6}.playhead{z-index:7}
 
 .clipContextHeading{padding:6px 10px 2px;color:#8b9296;font-size:8px;text-transform:uppercase;letter-spacing:.8px}
+.zonePicker{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.zonePickerTools{display:flex;gap:6px}
+.zonePicker{max-height:220px;overflow-y:auto;padding:2px;scrollbar-width:thin}
+.clipInspector .zonePicker label{display:flex;flex-direction:row;align-items:center;gap:4px;color:#c0c6c2;font-size:7px;letter-spacing:0}
+.clipInspector .zonePicker input[type=checkbox]{width:12px;height:12px;margin:0;padding:0;accent-color:#f5f5f5}
+@media (max-width:1023px){.clipInspector .zonePicker label{font-size:12px}.clipInspector .zonePicker input[type=checkbox]{width:22px;height:22px}}
+.desktopInspectorTabs{display:flex;align-items:center;gap:3px;padding:2px;background:#0c0e11;border:1px solid #292d32;border-radius:5px}
+.desktopInspectorTabs button{padding:5px 7px;border-radius:3px;color:#858c91;font-size:8px;letter-spacing:.2px}
+.desktopInspectorTabs button.active{background:#25292d;color:#f5f5f5}
+@media (max-width:1023px){.desktopInspectorTabs{display:none}}
