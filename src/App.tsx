@@ -13,7 +13,8 @@ import { PhonePreview } from './PhonePreview';
 
 const COLORS = ['#f5f5f5', '#83e5d8', '#ff765f', '#c49bff', '#7bb8ff', '#f6c76c'];
 const EFFECTS = ['Steady', 'Fade in', 'Fade out', 'Pulse', 'Strobe'];
-const TRACK_LABELS = ['Main arc', 'Upper bar', 'Lower bar', 'Camera ring', 'Side strip', 'Lower dot', 'Battery lower-left', 'Left vertical', 'Lower-right arc'];
+const TRACK_LABELS = ['Main arc', 'Upper bar', 'Lower bar', 'Camera ring', 'Side strip', 'Lower dot', 'Battery lower-left'];
+const NP2_TRACK_LABELS = ['Main arc', 'Upper-right diagonal', 'Lower bar', 'Top-left upper', 'Side strip', 'Lower dot', 'Battery lower-left', 'Left vertical', 'Lower-right arc', 'Top-left lower', 'Left arc'];
 const MAX_TIMELINE_ZOOM = 10;
 const SNAP_OPTIONS = ['Off', '10 ms', '50 ms', '100 ms', '1/32', '1/16', '1/8', '1/4', '1/2'];
 type GlyphEffect = 'Steady' | 'Fade in' | 'Fade out' | 'Pulse' | 'Strobe';
@@ -246,9 +247,11 @@ function App() {
   const history = useDaw.temporal.getState();
   const zoneCount = DEVICE_ZONES[device as keyof typeof DEVICE_ZONES] ?? 6;
   const groupedTracks = useMemo(() => {
-    const labels = device === 'NP2a' || device === 'NP2aPlus' || device === 'NP3a'
-      ? ['Top left', 'Middle right', 'Bottom left']
-      : TRACK_LABELS;
+    const labels = device === 'NP2'
+      ? NP2_TRACK_LABELS
+      : device === 'NP2a' || device === 'NP2aPlus' || device === 'NP3a'
+        ? ['Top left', 'Middle right', 'Bottom left']
+        : TRACK_LABELS;
     return glyphGroupIds(device).map((id, i) => ({ id, label: labels[id] ?? TRACK_LABELS[id] ?? `Glyph ${id + 1}`, color: COLORS[i % COLORS.length] }));
   }, [device]);
   const tracks = useMemo(() => {
@@ -300,16 +303,20 @@ function App() {
     e.preventDefault();
     const scroller = e.currentTarget;
     const startX = e.clientX;
-    const startScroll = scroller.scrollLeft;
+    const startY = e.clientY;
+    const startScrollLeft = scroller.scrollLeft;
+    const startScrollTop = scroller.scrollTop;
     let moved = false;
     const move = (event: PointerEvent) => {
-      const delta = event.clientX - startX;
-      if (!moved && Math.abs(delta) < 4) return;
+      const deltaX = event.clientX - startX;
+      const deltaY = event.clientY - startY;
+      if (!moved && Math.hypot(deltaX, deltaY) < 4) return;
       moved = true;
       suppressTimelineClick.current = true;
       setIsPanning(true);
       event.preventDefault();
-      scroller.scrollLeft = startScroll - delta;
+      scroller.scrollLeft = startScrollLeft - deltaX;
+      scroller.scrollTop = startScrollTop - deltaY;
     };
     const finish = () => {
       window.removeEventListener('pointermove', move);
@@ -781,15 +788,33 @@ function App() {
     const beatDuration = 60 / Math.max(10, Math.min(300, tempo));
     const subdivisions = generationPreset === 'Subtle' ? 1 : generationPreset === 'Aggressive' ? 4 : 2;
     const gridStep = beatDuration / subdivisions;
-    const phase = onsets[0].time;
+    const beatPeriodBins = Math.max(1, Math.round(beatDuration * 100));
+    let phase = 0;
+    let bestPhaseScore = -1;
+    for (let offset = 0; offset < beatPeriodBins; offset += 1) {
+      let score = 0;
+      let count = 0;
+      for (let beatTime = offset / 100; beatTime < normalizedFlux.length / 100; beatTime += beatDuration) {
+        const center = Math.round(beatTime * 100);
+        const localAttack = Math.max(normalizedFlux[Math.max(0, center - 2)] ?? 0, normalizedFlux[Math.max(0, center - 1)] ?? 0, normalizedFlux[center] ?? 0, normalizedFlux[Math.min(normalizedFlux.length - 1, center + 1)] ?? 0, normalizedFlux[Math.min(normalizedFlux.length - 1, center + 2)] ?? 0);
+        score += localAttack;
+        count += 1;
+      }
+      score /= Math.sqrt(Math.max(1, count));
+      if (score > bestPhaseScore) { bestPhaseScore = score; phase = offset / 100; }
+    }
     const tolerance = Math.max(.035, Math.min(.09, gridStep * .3));
-    const gridEvents = new Map<number, { time: number; strength: number }>();
+    const swingRatio = generationPreset === 'Subtle' ? 0 : generationPreset === 'Aggressive' ? .025 : .04;
+    const gridEvents = new Map<number, { time: number; strength: number; step: number }>();
     for (const onset of onsets) {
       const gridIndex = Math.round((onset.time - phase) / gridStep);
-      const time = phase + gridIndex * gridStep;
-      if (gridIndex < 0 || time > duration || Math.abs(onset.time - time) > tolerance) continue;
+      const straightTime = phase + gridIndex * gridStep;
+      const subdivisionPosition = ((gridIndex % subdivisions) + subdivisions) % subdivisions;
+      const swungEighth = subdivisions === 2 ? subdivisionPosition === 1 : subdivisions === 4 && subdivisionPosition === 2;
+      const time = straightTime + (swungEighth ? beatDuration * swingRatio : 0);
+      if (time < 0 || time > duration || Math.abs(onset.time - straightTime) > tolerance) continue;
       const current = gridEvents.get(gridIndex);
-      if (!current || onset.strength > current.strength) gridEvents.set(gridIndex, { time, strength: onset.strength });
+      if (!current || onset.strength > current.strength) gridEvents.set(gridIndex, { time, strength: onset.strength, step: gridIndex });
     }
     const beatEvents = [...gridEvents.values()].sort((a, b) => a.time - b.time);
     if (!beatEvents.length) { setMessage(`No transients matched the ${tempo} BPM grid. Try Detect BPM or Aggressive.`); return; }
@@ -798,59 +823,81 @@ function App() {
     const trackPool = tracks.length > 24
       ? Array.from({ length: 24 }, (_, index) => tracks[Math.floor(index * tracks.length / 24)])
       : tracks;
+    let randomState = crypto.getRandomValues(new Uint32Array(1))[0] || 1;
+    const random = () => {
+      randomState = (Math.imul(randomState, 1664525) + 1013904223) >>> 0;
+      return randomState / 0x100000000;
+    };
+    const recentTrackIds: number[] = [];
+    const chooseTrack = (excluded: Set<number>) => {
+      const avoidRecent = new Set([...recentTrackIds.slice(-2), ...excluded]);
+      const varied = trackPool.filter(track => !avoidRecent.has(track.id));
+      const available = varied.length ? varied : trackPool.filter(track => !excluded.has(track.id));
+      return available[Math.floor(random() * available.length)] ?? trackPool[0];
+    };
     const grouped = deviceMode === 'Grouped';
     const generated: ExtendedClip[] = [];
     const occupied = [...clips] as ExtendedClip[];
     let eventIndex = 0;
     for (const event of beatEvents.slice(0, eventLimit)) {
-      const { time, strength } = event;
+      const { time, strength, step } = event;
+      const downbeat = step % subdivisions === 0;
       const layerCount = Math.min(trackPool.length, generationPreset === 'Aggressive'
-        ? strength > .68 ? 3 : 2
-        : generationPreset === 'Rhythmic' ? strength > .72 && eventIndex % 3 !== 1 ? 2 : 1
-        : strength > .82 && eventIndex % 4 === 0 ? 2 : 1);
+        ? strength > .58 && random() < .72 ? 3 : 2
+        : generationPreset === 'Rhythmic' ? strength > .58 && random() < .48 ? 2 : 1
+        : strength > .82 && random() < .22 ? 2 : 1);
       const usedTracks = new Set<number>();
       for (let layer = 0; layer < layerCount; layer += 1) {
-        const poolIndex = (eventIndex + layer * Math.max(1, Math.ceil(trackPool.length / 3))) % trackPool.length;
-        let track = trackPool[poolIndex];
-        if (usedTracks.has(track.id)) track = trackPool.find(candidate => !usedTracks.has(candidate.id)) ?? track;
+        const track = chooseTrack(usedTracks);
         usedTracks.add(track.id);
+        recentTrackIds.push(track.id);
+        if (recentTrackIds.length > 4) recentTrackIds.shift();
         const strip = glyphStripForTrack(device, track.id, grouped);
         const zones = glyphZonesForTrack(device, track.id, grouped);
-        const modeRoll = (eventIndex * 7 + layer * 5) % 10;
+        const modeRoll = random();
         let lightMode: GlyphLightMode | undefined;
-        if (strip.length > 1 && modeRoll < (generationPreset === 'Aggressive' ? 4 : generationPreset === 'Rhythmic' ? 2 : 1)) {
+        const sweepChance = generationPreset === 'Aggressive' ? .35 : generationPreset === 'Rhythmic' ? .22 : .1;
+        const fillChance = generationPreset === 'Aggressive' ? .32 : generationPreset === 'Rhythmic' ? .32 : .25;
+        const zonesChance = generationPreset === 'Aggressive' ? .16 : generationPreset === 'Rhythmic' ? .23 : .25;
+        if (strip.length > 1 && modeRoll < sweepChance) {
           lightMode = 'Sweep';
-        } else if (strip.length > 1 && modeRoll < (generationPreset === 'Aggressive' ? 7 : generationPreset === 'Rhythmic' ? 5 : 4)) {
+        } else if (strip.length > 1 && modeRoll < sweepChance + fillChance) {
           lightMode = 'Fill';
-        } else if (zones.length > 1 && modeRoll < (generationPreset === 'Aggressive' ? 9 : generationPreset === 'Rhythmic' ? 8 : 6)) {
+        } else if (zones.length > 1 && modeRoll < sweepChance + fillChance + zonesChance) {
           lightMode = 'Zones';
         }
-        const directionRoll = (eventIndex * 11 + layer * 7) % 8;
-        const direction: GlyphLightDirection = directionRoll === 0 ? 'reverse'
-          : directionRoll === 1 ? 'forward-instant'
-          : directionRoll === 2 ? 'reverse-instant' : 'forward';
+        const directionRoll = random();
+        const direction: GlyphLightDirection = directionRoll < .17 ? 'reverse'
+          : directionRoll < .29 ? 'forward-instant'
+          : directionRoll < .38 ? 'reverse-instant' : 'forward';
         const selectedZones = lightMode === 'Zones' ? (() => {
           const count = Math.min(zones.length, Math.max(1, Math.round(Math.sqrt(zones.length))));
-          const offset = (eventIndex * 3 + layer * 5) % zones.length;
-          return Array.from({ length: count }, (_, index) => zones[(offset + index) % zones.length]);
+          const shuffled = [...zones];
+          for (let index = shuffled.length - 1; index > 0; index -= 1) {
+            const target = Math.floor(random() * (index + 1));
+            [shuffled[index], shuffled[target]] = [shuffled[target], shuffled[index]];
+          }
+          return shuffled.slice(0, count);
         })() : undefined;
-        const beatRatio = generationPreset === 'Subtle' ? .8 : generationPreset === 'Aggressive' ? .28 : .5;
-        const clipDuration = beatDuration * beatRatio * (layer ? .9 : 1);
+        const beatRatio = generationPreset === 'Subtle' ? .58 + strength * .46
+          : generationPreset === 'Aggressive' ? .16 + strength * .28 : .3 + strength * .46;
+        const durationSteps = Math.max(1, Math.round(beatDuration * beatRatio / gridStep));
+        const clipDuration = gridStep * Math.max(1, Math.round(durationSteps * (layer ? .8 : 1)));
         const layerDelay = layer * gridStep;
         const start = nearestFreeStart(occupied, track.id, time + layerDelay, clipDuration);
         if (start > duration) continue;
-        const effectRoll = (eventIndex * 3 + layer * 2) % 8;
+        const effectRoll = random();
         const effect: GlyphEffect = generationPreset === 'Subtle'
-          ? effectRoll < 4 ? 'Fade in' : 'Steady'
+          ? effectRoll < .38 ? 'Fade in' : effectRoll < .55 ? 'Fade out' : 'Steady'
           : generationPreset === 'Aggressive'
-            ? effectRoll < 3 ? 'Strobe' : effectRoll < 6 ? 'Pulse' : 'Fade out'
-            : effectRoll < 4 ? 'Pulse' : effectRoll === 4 ? 'Fade out' : 'Steady';
+            ? effectRoll < .24 ? 'Strobe' : effectRoll < .62 ? 'Pulse' : effectRoll < .78 ? 'Fade out' : 'Steady'
+            : effectRoll < .4 ? 'Pulse' : effectRoll < .62 ? 'Fade in' : effectRoll < .76 ? 'Fade out' : 'Steady';
         const clip: ExtendedClip = {
           id: crypto.randomUUID(), track: track.id, start, duration: clipDuration,
           name: 'Audio accent', color: track.color,
-          brightness: Math.round(38 + strength * 62), effect, lightMode,
-          ...(lightMode === 'Fill' ? { fillAmount: Math.max(1, Math.ceil(strip.length * (.4 + strength * .6))) } : {}),
-          ...(lightMode === 'Sweep' ? { tailLength: Math.max(1, Math.min(strip.length, 1 + Math.round(strength * 4))) } : {}),
+          brightness: Math.max(20, Math.min(100, Math.round(30 + strength * 58 + (downbeat ? 12 : -4)))), effect, lightMode,
+          ...(lightMode === 'Fill' ? { fillAmount: Math.max(1, Math.ceil(strip.length * (.35 + strength * .65))) } : {}),
+          ...(lightMode === 'Sweep' ? { tailLength: Math.max(1, Math.min(strip.length, 1 + Math.round(random() * Math.min(6, strip.length - 1)))) } : {}),
           ...(lightMode === 'Zones' ? { selectedZones } : {}),
           ...(lightMode === 'Fill' || lightMode === 'Sweep' ? { direction } : {}),
         };

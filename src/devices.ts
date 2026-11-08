@@ -97,8 +97,10 @@ export function glyphGroupForZone(model: string, index: number): number {
     return 2;
   }
   if (model === 'NP2') {
-    if (index <= 1) return 3;
-    if (index === 2 || index === 19) return 1;
+    if (index === 0) return 3;
+    if (index === 1) return 9;
+    if (index === 2) return 1;
+    if (index === 19) return 10;
     if (index === 20) return 7;
     if (index === 21) return 6;
     if (index === 22) return 8;
@@ -118,7 +120,7 @@ export function glyphGroupIds(model: string): number[] {
   const zoneCount = DEVICE_ZONES[model as keyof typeof DEVICE_ZONES] ?? 0;
   const groups = [...new Set(Array.from({ length: zoneCount }, (_, zone) => glyphGroupForZone(model, zone)))];
   // Keep Phone (2)'s track order stable while exposing the side glyphs separately.
-  return model === 'NP2' ? [3, 1, 0, 4, 6, 2, 5, 7, 8] : groups;
+  return model === 'NP2' ? [3, 9, 1, 10, 0, 4, 6, 2, 5, 7, 8] : groups;
 }
 
 /** Button IDs used by the composer's CUSTOM1 timeline dots. */
