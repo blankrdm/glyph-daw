@@ -3,8 +3,15 @@ export const DEVICE_NAMES={NP1:'Phone (1)',NP1_15:'Phone (1) · Experimental 15 
 export const GLYPH_STEP_MS=16.666;
 export const MAX_BRIGHTNESS=4095;
 
-export type GlyphLightMode = 'Normal' | 'Fill' | 'Sweep' | 'Zones';
+export type GlyphLightMode = 'Normal' | 'Fill' | 'Sweep' | 'Zones' | 'Flicker' | 'Random Flicker';
 export type GlyphLightDirection = 'forward' | 'reverse' | 'forward-instant' | 'reverse-instant';
+
+export function glyphLightAnimationState(elapsedSeconds: number, clipDuration: number, customSpeed?: number, loop = false) {
+  const animationDuration = customSpeed && customSpeed > 0 ? clipDuration / customSpeed : clipDuration;
+  const rawProgress = Math.max(0, elapsedSeconds) / Math.max(.001, animationDuration);
+  if (customSpeed && loop) return { progress: rawProgress % 1, holdAtEnd: false };
+  return { progress: Math.min(1, rawProgress), holdAtEnd: Boolean(customSpeed && rawProgress >= 1) };
+}
 
 /** Physical LED zones controlled by a grouped or individual track. */
 export function glyphZonesForTrack(model: string, track: number, grouped: boolean): number[] {
@@ -44,11 +51,34 @@ export function glyphClipZoneWeights(
   sweepWidth = 3,
   fillAmount?: number,
   selectedZones?: number[],
+  holdAtEnd = false,
+  flickerGap?: number,
 ): Array<[zone: number, weight: number]> {
   const normalZones = glyphZonesForTrack(model, track, grouped);
   if (mode === 'Zones') {
     const selected = selectedZones ? new Set(selectedZones) : null;
     return normalZones.filter(zone => !selected || selected.has(zone)).map(zone => [zone, 1] as [number, number]);
+  }
+  if (mode === 'Flicker') {
+    const frame = Math.floor(Math.max(0, Math.min(1, progress)) * 60);
+    const pulse = Math.floor(frame / 3);
+    const level = flickerLevel(pulse, 0);
+    return normalZones.filter(zone => isVisibleGlyphZone(model, zone)).map(zone => [zone, level]);
+  }
+  if (mode === 'Random Flicker') {
+    const frame = Math.floor(Math.max(0, Math.min(1, progress)) * 60);
+    const pulse = Math.floor(frame / 3);
+    const zones = normalZones.filter(zone => isVisibleGlyphZone(model, zone));
+    const candidates = zones.map((zone, index) => ({ zone, index, weight: flickerLevel(pulse, zone + 1), rank: flickerHash(pulse, zone + 1) }))
+      .filter(candidate => candidate.weight > 0)
+      .sort((a, b) => (a.rank >>> 0) - (b.rank >>> 0));
+    const selected: typeof candidates = [];
+    const gap = Math.max(0, Math.round(flickerGap ?? 0));
+    for (const candidate of candidates) {
+      if (flickerGap === undefined || selected.every(other => Math.abs(other.index - candidate.index) > gap)) selected.push(candidate);
+    }
+    const weights = new Map(selected.map(candidate => [candidate.zone, candidate.weight]));
+    return zones.map(zone => [zone, weights.get(zone) ?? 0]);
   }
   if (mode !== 'Fill' && mode !== 'Sweep') return normalZones.filter(zone => isVisibleGlyphZone(model, zone)).map(zone => [zone, 1]);
 
@@ -72,7 +102,7 @@ export function glyphClipZoneWeights(
   const headPosition = position * (strip.length - 1);
   const head = Math.floor(headPosition);
   const fraction = headPosition - head;
-  const endFade = Math.min(1, (1 - position) / .18);
+  const endFade = holdAtEnd ? 1 : Math.min(1, (1 - position) / .18);
   const zones: Array<[zone: number, weight: number]> = [];
   for (let index = 0; index < strip.length; index += 1) {
     const atHead = index <= head && index >= head - width + 1 ? 1 : 0;
@@ -83,6 +113,21 @@ export function glyphClipZoneWeights(
     if (weight > 0 && isVisibleGlyphZone(model, zone)) zones.push([zone, weight]);
   }
   return zones;
+}
+
+function flickerLevel(pulse: number, salt: number): number {
+  if (pulse === 0) return 1;
+  const hash = flickerHash(pulse, salt);
+  const level = (hash >>> 0) % 10;
+  return level < 6 ? 1 : level < 8 ? .35 : 0;
+}
+
+function flickerHash(pulse: number, salt: number): number {
+  let hash = Math.imul(pulse + 1, 0x45d9f3b) ^ Math.imul(salt + 1, 0x27d4eb2d);
+  hash ^= hash >>> 16;
+  hash = Math.imul(hash, 0x45d9f3b);
+  hash ^= hash >>> 16;
+  return hash;
 }
 
 /** Keep in sync with PhonePreview's grouped-zone mapping so exported patterns

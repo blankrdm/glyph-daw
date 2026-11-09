@@ -2,7 +2,7 @@ import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
 import pako from 'pako';
 import type { Clip } from './store';
-import { DEVICE_ZONES, glyphButtonForZone, glyphButtonsForGroup, glyphClipZoneWeights, glyphGroupForZone, isVisibleGlyphZone, type GlyphLightDirection, type GlyphLightMode } from './devices';
+import { DEVICE_ZONES, glyphButtonForZone, glyphButtonsForGroup, glyphClipZoneWeights, glyphGroupForZone, glyphLightAnimationState, isVisibleGlyphZone, type GlyphLightDirection, type GlyphLightMode } from './devices';
 
 const devices: Record<string, { composer: string; zones: number; custom2: string }> = {
   NP1: { composer: 'v1-Spacewar Glyph Composer', zones: 5, custom2: '5cols' },
@@ -14,7 +14,7 @@ const devices: Record<string, { composer: string; zones: number; custom2: string
   NP3: { composer: 'v1-Metroid Glyph Composer', zones: 625, custom2: '625cols' },
 };
 
-type ExportClip = Clip & { effect?: string; lightMode?: GlyphLightMode; direction?: GlyphLightDirection; tailLength?: number; fillAmount?: number; selectedZones?: number[] };
+type ExportClip = Clip & { effect?: string; effectSpeed?: number; lightMode?: GlyphLightMode; direction?: GlyphLightDirection; tailLength?: number; fillAmount?: number; selectedZones?: number[]; flickerGap?: number; animationSpeed?: number; animationTime?: number; loopAnimation?: boolean };
 
 const FRAME_RATE = 60;
 const EMPTY_CUSTOM1 = 'eNoDAAAAAAE=';
@@ -69,14 +69,19 @@ function encodeGlyphCsv(clips: ExportClip[], model: string, grouped: boolean, du
       const elapsed = sourceFrame - starts[i];
       const total = Math.max(1, ends[i] - starts[i]);
       const progress = elapsed / total;
+      const effectAnimation = glyphLightAnimationState(elapsed / FRAME_RATE, total / FRAME_RATE, clip.effectSpeed, clip.effect === 'Pulse');
+      const effectProgress = clip.effectSpeed === undefined ? progress : effectAnimation.progress;
+      const clipDuration = total / FRAME_RATE;
+      const animationSpeed = clip.animationSpeed ?? (clip.animationTime ? clipDuration / clip.animationTime : undefined);
+      const lightAnimation = glyphLightAnimationState(elapsed / FRAME_RATE, clipDuration, animationSpeed, clip.loopAnimation);
       const base = clip.brightness * 40.95 * master / 100;
       let brightness = base;
-      if (clip.effect === 'Fade in') brightness *= progress;
-      else if (clip.effect === 'Fade out') brightness *= 1 - progress;
-      else if (clip.effect === 'Pulse') brightness *= .35 + .65 * (.5 + .5 * Math.sin(progress * Math.PI * 4));
-      else if (clip.effect === 'Strobe') brightness = Math.floor(elapsed / 12) % 2 === 0 ? base : 0;
+      if (clip.effect === 'Fade in') brightness *= effectProgress;
+      else if (clip.effect === 'Fade out') brightness *= 1 - effectProgress;
+      else if (clip.effect === 'Pulse') brightness *= .35 + .65 * (.5 + .5 * Math.sin(effectProgress * Math.PI * 4));
+      else if (clip.effect === 'Strobe') brightness = Math.floor(elapsed * (clip.effectSpeed ?? 1) / 12) % 2 === 0 ? base : 0;
       const encoded = Math.max(0, Math.min(4095, Math.round(brightness)));
-      for (const [zone, weight] of glyphClipZoneWeights(model, clip.track, grouped, clip.lightMode, clip.direction, progress, clip.tailLength, clip.fillAmount, clip.selectedZones)) {
+      for (const [zone, weight] of glyphClipZoneWeights(model, clip.track, grouped, clip.lightMode, clip.direction, lightAnimation.progress, clip.tailLength, clip.fillAmount, clip.selectedZones, lightAnimation.holdAtEnd, clip.flickerGap)) {
         if (zone >= 0 && zone < zoneCount && isVisibleGlyphZone(model, zone)) row[zone] = Math.max(row[zone], Math.round(encoded * weight));
       }
     }

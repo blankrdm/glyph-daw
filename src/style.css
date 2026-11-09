@@ -122,3 +122,8 @@ body,.app{background:#090a0c}.top,.rail,.inspector{background:#101215}.workspace
 .scroller{overflow-y:scroll;scrollbar-width:auto;scrollbar-color:#5a6060 #191a1b}.scroller::-webkit-scrollbar{width:12px;height:12px}.scroller::-webkit-scrollbar-thumb{background:#4a5050;border:3px solid #191a1b;border-radius:8px}.scroller::-webkit-scrollbar-thumb:hover{background:#737a7a}.scroller::-webkit-scrollbar-track{background:#191a1b}
 
 .main{grid-template-rows:minmax(0,1fr)}.workspace{min-height:0;overflow:hidden}.toolbar,.trackhead{flex:none}.timelineArea{min-height:0;overflow:hidden}.scroller{height:100%;min-height:0;overflow:auto;scrollbar-width:thin}
+
+.lightTimeSettings{display:flex;flex-direction:column;gap:9px}.clipInspector .lightTimeToggle{display:flex;flex-direction:row;align-items:center;gap:8px;color:#b7beb9;font-size:9px;letter-spacing:0}.clipInspector .lightTimeToggle input[type=checkbox]{width:14px;height:14px;flex:none;margin:0;padding:0;accent-color:#f5f5f5}.lightTimeToggle span{line-height:1.3}
+@media(max-width:1023px){.clipInspector .lightTimeToggle{min-height:38px;font-size:12px}.clipInspector .lightTimeToggle input[type=checkbox]{width:20px;height:20px}}
+
+.clipInspector .lightTimeSlider{gap:6px}.lightTimeSlider>span{display:flex;align-items:center;justify-content:space-between;color:#89908c;font-size:8px;letter-spacing:.7px}.lightTimeSlider>span b{color:#f5f5f5;font:10px 'DM Mono';letter-spacing:0}.clipInspector .lightTimeSlider input[type=range]{width:100%;margin:0;accent-color:#f5f5f5}
